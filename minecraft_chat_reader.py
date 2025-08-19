@@ -549,7 +549,6 @@ async def monitor_minecraft_chat_loop():
 
                                 # ### MODIFIED ### - Call get_push_message_details with full_detail=False for Raids/Bosses
                                 detailed_message, icon_url = await get_push_message_details(pokemon_name,
-                                                                                            "A new raid is starting!",
                                                                                             force_mega=1 if is_mega_raid else 0,
                                                                                             full_detail=False)
                                 await send_push_notification(push_title, detailed_message, "battle", icon_url=icon_url)
