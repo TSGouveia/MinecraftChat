@@ -1,3 +1,4 @@
+# minecraft_chat_reader.py
 # -*- coding: utf-8 -*-
 import time
 import os
@@ -358,17 +359,14 @@ async def send_push_notification(title: str, message: str, tags: str = "bell", i
         print(f"ERROR: Failed to send push notification: {e}")
 
 
-# ### MODIFIED ### - Now returns a tuple (message, icon_url) and has a `full_detail` flag
 async def get_push_message_details(pokemon_name: str, message: str, force_mega: int = 0, full_detail: bool = True) -> \
 tuple[str, str | None]:
     normalized_name = normalize_pokemon_name(pokemon_name)
     pokemon_data = pokemon_db.get(normalized_name)
     if not pokemon_data:
         return message, None
-
     is_mega = force_mega > 0 and pokemon_data.get('has_mega') == 'TRUE'
     prefix = "mega_2_" if is_mega and force_mega == 2 and pokemon_data.get('has_mega_2') == 'TRUE' else "mega_"
-
     if is_mega:
         sprite_url = pokemon_data.get(f'{prefix}sprite_url') or pokemon_data['sprite_url']
         types = [t.strip() for t in (pokemon_data.get(f'{prefix}types') or pokemon_data['types']).split(',')]
@@ -391,7 +389,6 @@ tuple[str, str | None]:
             'special-attack': pokemon_data['special-attack'], 'special-defense': pokemon_data['special-defense'],
             'speed': pokemon_data['speed']
         }
-
     effectiveness = calculate_effectiveness(types)
     body_parts = [message, ""]
     body_parts.append(' '.join([f"{TYPE_EMOJIS.get(t, '')} {t.title()}" for t in types]))
@@ -399,8 +396,6 @@ tuple[str, str | None]:
     if effectiveness['weaknesses']['x4']: body_parts.append(f"  • x4: {', '.join(effectiveness['weaknesses']['x4'])}")
     if effectiveness['weaknesses']['x2']: body_parts.append(f"  • x2: {', '.join(effectiveness['weaknesses']['x2'])}")
     if not effectiveness['weaknesses']['x4'] and not effectiveness['weaknesses']['x2']: body_parts.append("  • None")
-
-    # Only add full details if requested
     if full_detail:
         body_parts.append("\n🛡️ **Resistances & Immunities:**")
         if effectiveness['resistances']: body_parts.append(f"  • Resists: {', '.join(effectiveness['resistances'])}")
@@ -409,7 +404,6 @@ tuple[str, str | None]:
         body_parts.append(f"\n**Abilities:**\n  • {', '.join(abilities)}")
         stats_str = f"HP: {stats['hp']} | Atk: {stats['attack']} | Def: {stats['defense']} | SpA: {stats['special-attack']} | SpD: {stats['special-defense']} | Spe: {stats['speed']}"
         body_parts.append(f"\n**Base Stats:**\n  • {stats_str}")
-
     return "\n".join(body_parts), sprite_url
 
 
@@ -547,7 +541,6 @@ async def monitor_minecraft_chat_loop():
                                     summary_text = f"**RAID STARTED!** - {pokemon_name.title()}"
                                     push_title = f"RAID STARTED - {pokemon_name.upper()}"
 
-                                # ### MODIFIED ### - Call get_push_message_details with full_detail=False for Raids/Bosses
                                 detailed_message, icon_url = await get_push_message_details(pokemon_name,
                                                                                             "A new raid is starting!",
                                                                                             force_mega=1 if is_mega_raid else 0,
@@ -615,7 +608,7 @@ async def monitor_minecraft_chat_loop():
                             mention_string = get_player_specific_mention(player_name)
                             detailed_message, icon_url = await get_push_message_details(pokemon_name,
                                                                                         f"A {rarity.title()} {pokemon_name.title()} has appeared!",
-                                                                                        full_detail=True)  # Shinies are informational, so full detail is fine
+                                                                                        full_detail=False)
                             await send_push_notification(f"SHINY SPAWN ({player_name}) - {pokemon_name.upper()}",
                                                          detailed_message, "sparkles", icon_url=icon_url)
                             summary_text = f"**✨ SHINY SPAWNED!** - {pokemon_name.title()} for **{player_name}**"
@@ -638,7 +631,7 @@ async def monitor_minecraft_chat_loop():
                             mention_string = get_player_specific_mention(player_name)
                             detailed_message, icon_url = await get_push_message_details(pokemon_name,
                                                                                         f"A {category} has appeared!",
-                                                                                        full_detail=True)  # Also informational
+                                                                                        full_detail=False)
                             await send_push_notification(
                                 f"{category.upper()} SPAWN ({player_name}) - {pokemon_name.upper()}", detailed_message,
                                 "warning", icon_url=icon_url)
@@ -704,24 +697,56 @@ async def on_ready():
     if not target_channel:
         print(f"FATAL ERROR: Channel with ID {Config.DISCORD.CHANNEL_ID} not found.")
         return await bot.close()
-    if Config.BEHAVIOR.CLEAR_CHANNEL_ON_STARTUP:
+    if Config.BEHAVIOR.CLEAR_CHANNEL_ON_STARTUP and Config.DISCORD.ADMIN_ID == 379261623803707405:  # Only clear if LazySan is running it
         try:
-            await target_channel.purge(limit=100); print("Channel successfully cleared.")
+            await target_channel.purge(limit=100); print("Channel successfully cleared by admin.")
         except discord.errors.Forbidden:
             print("WARNING: Bot lacks permission to clear messages in the channel.")
         except Exception as e:
             print(f"ERROR: Could not clear the channel: {e}")
-    await target_channel.send(f"Bot online! Use `{Config.DISCORD.COMMAND_PREFIX}help` to see all available commands.")
+    await target_channel.send(
+        f"Bot online! Use `{Config.DISCORD.COMMAND_PREFIX}help` to see all available commands. (Instance run by: <@{Config.DISCORD.ADMIN_ID}>)")
     check_log_file_activity.start()
     bot.loop.create_task(monitor_minecraft_chat_loop())
 
 
-def is_admin():
-    async def predicate(ctx): return ctx.author.id == Config.DISCORD.ADMIN_ID
+def is_core_user():
+    """Check if the command author is one of the main users."""
+
+    async def predicate(ctx):
+        is_allowed = ctx.author.id in Config.DISCORD.PLAYER_DISCORD_MAP.values()
+        if not is_allowed:
+            try:
+                await ctx.message.delete()
+            except discord.Forbidden:
+                pass
+        return is_allowed
 
     return commands.check(predicate)
 
 
+@bot.event
+async def on_message(message):
+    if message.author == bot.user:
+        return
+    if message.content.lower() == f"{Config.DISCORD.COMMAND_PREFIX}bot shutdown":
+        if message.author.id in Config.DISCORD.PLAYER_DISCORD_MAP.values():
+            print("Shutdown command received from an authorized user. Shutting down...")
+            if target_channel:
+                await target_channel.send(
+                    f"**[Shutdown]** Command received from {message.author.mention}. Bot instance on `{os.getenv('COMPUTERNAME', 'Unknown PC')}` is shutting down.")
+            await bot.close()
+        else:
+            try:
+                await message.delete()
+            except discord.Forbidden:
+                pass
+    await bot.process_commands(message)
+
+
+# =================================================================================
+# --- BOT COMMANDS ---
+# =================================================================================
 @bot.command(name='help')
 async def show_help_panel(ctx):
     embed = discord.Embed(title="Cobblemon Bot Commands",
@@ -730,8 +755,8 @@ async def show_help_panel(ctx):
     embed.add_field(name="🔔 Discord Mentions",
                     value=f"`{Config.DISCORD.COMMAND_PREFIX}notifications on` - Subscribe to get mentioned in alerts.\n`{Config.DISCORD.COMMAND_PREFIX}notifications off` - Unsubscribe from mentions.\n`{Config.DISCORD.COMMAND_PREFIX}notifications` - Check your current subscription status.",
                     inline=False)
-    embed.add_field(name="⚙️ Admin",
-                    value=f"`{Config.DISCORD.COMMAND_PREFIX}debug` - Show diagnostic info.\n`{Config.DISCORD.COMMAND_PREFIX}notifications list` - List subscribed users.\n`{Config.DISCORD.COMMAND_PREFIX}raid form <message_id> <1|2>` - Switch a raid to its other Mega form.",
+    embed.add_field(name="⚙️ Admin & Core User Commands",
+                    value=f"`{Config.DISCORD.COMMAND_PREFIX}debug` - Show diagnostic info.\n`{Config.DISCORD.COMMAND_PREFIX}notifications list` - List subscribed users.\n`{Config.DISCORD.COMMAND_PREFIX}raid form <message_id> <1|2>` - Switch a raid to its other Mega form.\n`{Config.DISCORD.COMMAND_PREFIX}bot shutdown` - Shuts down all running bot instances.",
                     inline=False)
     embed.set_footer(text="Bot developed for the Dystoria community.")
     await ctx.send(embed=embed)
@@ -752,7 +777,7 @@ async def show_features_panel(ctx):
                     value=f"If a configured player is AFK for {int((Config.BEHAVIOR.AFK_KICK_TIME_SEC - Config.BEHAVIOR.AFK_WARNING_BEFORE_KICK_SEC) / 60)} minutes, the bot will send a warning with a 5-minute countdown to the kick. The timer is cancelled if the player is no longer AFK.",
                     inline=False)
     embed.add_field(name="📱 Push Notifications (Mobile)",
-                    value=f"Receive push notifications for all events. **Raids/Bosses** show key weaknesses. **Shinies/Legendaries** show full stats. The **Wonder Trade/AFK** alerts are sent when the final timer is up. To set it up:\n1. Install the **ntfy** app.\n2. Subscribe to the public topic: `{Config.NTFY.TOPIC}`",
+                    value=f"Receive push notifications for all events. **Raids/Bosses** show key weaknesses, while **Shinies/Legendaries** have a simpler format. The **Wonder Trade/AFK** alerts are sent when the final timer is up. To set it up:\n1. Install the **ntfy** app.\n2. Subscribe to the public topic: `{Config.NTFY.TOPIC}`",
                     inline=False)
     embed.set_footer(text="All these features run automatically in the background.")
     await ctx.send(embed=embed)
@@ -787,7 +812,7 @@ async def notifications_off(ctx):
 
 
 @notifications.command(name='list')
-@is_admin()
+@is_core_user()
 async def notifications_list(ctx):
     if not subscribed_users:
         return await ctx.send("No users are subscribed to Discord mentions.", ephemeral=True)
@@ -795,6 +820,21 @@ async def notifications_list(ctx):
     embed = discord.Embed(title=f"Discord Mention Subscribers ({len(subscribed_users)})",
                           description="\n".join(user_mentions), color=Config.COLORS.INFO)
     await ctx.send(embed=embed, ephemeral=True)
+
+
+@bot.group(name="bot")
+@is_core_user()
+async def bot_cmd(ctx):
+    if ctx.invoked_subcommand is None:
+        await ctx.send(f"Invalid bot command. Use `{Config.DISCORD.COMMAND_PREFIX}bot shutdown`.", ephemeral=True,
+                       delete_after=10)
+        await ctx.message.delete()
+
+
+@bot_cmd.command(name='shutdown')
+@is_core_user()
+async def bot_shutdown(ctx):
+    await ctx.send("✅ Shutdown signal sent to all active bot instances.", ephemeral=True, delete_after=10)
 
 
 @bot.group(invoke_without_command=True)
@@ -883,6 +923,10 @@ async def debug_command(ctx):
 
 
 async def main():
+    if not Config.DISCORD.TOKEN:
+        print("CRITICAL ERROR: 'config_local.py' not found or DISCORD_TOKEN is missing.")
+        print("Please create the file and add your bot token.")
+        return
     load_pokemon_data()
     async with bot:
         await bot.start(Config.DISCORD.TOKEN)
