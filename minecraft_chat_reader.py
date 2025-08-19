@@ -1,4 +1,3 @@
-# minecraft_chat_reader.py
 # -*- coding: utf-8 -*-
 import time
 import os
@@ -13,29 +12,18 @@ from datetime import datetime, timezone
 # =================================================================================
 # --- USER PROFILES & DYNAMIC CONFIGURATION ---
 # =================================================================================
-
 USER_PROFILES = {
-    "LazySan": {
-        "discord_id": 379261623803707405,
-        "log_path_type": "APPDATA",
-        "log_path_value": os.path.join("ModrinthApp", "profiles", "Cobblemon Dystoria 3.0.4", "logs", "latest.log")
-    },
-    "TheNepia": {
-        "discord_id": 285901101029392385,
-        "log_path_type": "ABSOLUTE",
-        "log_path_value": r"C:\Users\andre\curseforge\minecraft\Instances\Cobblemon Dystoria\logs\latest.log"
-    },
-    "Kimachi00": {
-        "discord_id": 593562868323057676,
-        "log_path_type": "APPDATA",
-        "log_path_value": os.path.join("ModrinthApp", "profiles", "Cobblemon Dystoria LazySan 1.0.0", "logs",
-                                       "latest.log")
-    },
-    "guidobaldo": {
-        "discord_id": 326301121809481728,
-        "log_path_type": "APPDATA",
-        "log_path_value": os.path.join("ModrinthApp", "profiles", "Cobblemon Dystoria", "logs", "latest.log")
-    }
+    "LazySan": {"discord_id": 379261623803707405, "log_path_type": "APPDATA",
+                "log_path_value": os.path.join("ModrinthApp", "profiles", "Cobblemon Dystoria 3.0.4", "logs",
+                                               "latest.log")},
+    "TheNepia": {"discord_id": 285901101029392385, "log_path_type": "ABSOLUTE",
+                 "log_path_value": r"C:\Users\andre\curseforge\minecraft\Instances\Cobblemon Dystoria\logs\latest.log"},
+    "Kimachi00": {"discord_id": 593562868323057676, "log_path_type": "APPDATA",
+                  "log_path_value": os.path.join("ModrinthApp", "profiles", "Cobblemon Dystoria LazySan 1.0.0", "logs",
+                                                 "latest.log")},
+    "guidobaldo": {"discord_id": 326301121809481728, "log_path_type": "APPDATA",
+                   "log_path_value": os.path.join("ModrinthApp", "profiles", "Cobblemon Dystoria", "logs",
+                                                  "latest.log")}
 }
 
 
@@ -100,8 +88,7 @@ def select_user_and_configure():
 class Config:
     class DISCORD:
         try:
-            from config_local import DISCORD_TOKEN
-            TOKEN = DISCORD_TOKEN
+            from config_local import DISCORD_TOKEN; TOKEN = DISCORD_TOKEN
         except ImportError:
             TOKEN = None
         CHANNEL_ID = 1403568094063890533;
@@ -540,13 +527,11 @@ async def monitor_minecraft_chat_loop():
                                 else:
                                     summary_text = f"**RAID STARTED!** - {pokemon_name.title()}"
                                     push_title = f"RAID STARTED - {pokemon_name.upper()}"
-
                                 detailed_message, icon_url = await get_push_message_details(pokemon_name,
                                                                                             "A new raid is starting!",
                                                                                             force_mega=1 if is_mega_raid else 0,
                                                                                             full_detail=False)
                                 await send_push_notification(push_title, detailed_message, "battle", icon_url=icon_url)
-
                                 embed_title = "⚔️ RAID STARTED! ⚔️"
                                 embed = await create_pokemon_embed(pokemon_name, embed_title, Config.COLORS.RAID,
                                                                    is_full_analysis=True,
@@ -744,6 +729,14 @@ async def on_message(message):
     await bot.process_commands(message)
 
 
+def is_admin():
+    """Check if the command author is the user running the script."""
+
+    async def predicate(ctx): return ctx.author.id == Config.DISCORD.ADMIN_ID
+
+    return commands.check(predicate)
+
+
 # =================================================================================
 # --- BOT COMMANDS ---
 # =================================================================================
@@ -777,7 +770,7 @@ async def show_features_panel(ctx):
                     value=f"If a configured player is AFK for {int((Config.BEHAVIOR.AFK_KICK_TIME_SEC - Config.BEHAVIOR.AFK_WARNING_BEFORE_KICK_SEC) / 60)} minutes, the bot will send a warning with a 5-minute countdown to the kick. The timer is cancelled if the player is no longer AFK.",
                     inline=False)
     embed.add_field(name="📱 Push Notifications (Mobile)",
-                    value=f"Receive push notifications for all events. **Raids/Bosses** show key weaknesses, while **Shinies/Legendaries** have a simpler format. The **Wonder Trade/AFK** alerts are sent when the final timer is up. To set it up:\n1. Install the **ntfy** app.\n2. Subscribe to the public topic: `{Config.NTFY.TOPIC}`",
+                    value=f"Receive push notifications for all events. **Raids/Bosses/Shinies** show key weaknesses. The **Wonder Trade/AFK** alerts are sent when the final timer is up. To set it up:\n1. Install the **ntfy** app.\n2. Subscribe to the public topic: `{Config.NTFY.TOPIC}`",
                     inline=False)
     embed.set_footer(text="All these features run automatically in the background.")
     await ctx.send(embed=embed)
