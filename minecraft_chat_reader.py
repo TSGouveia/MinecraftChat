@@ -441,7 +441,7 @@ async def afk_warning_task(player_name: str):
         warning_delay = Config.BEHAVIOR.AFK_KICK_TIME_SEC - Config.BEHAVIOR.AFK_WARNING_BEFORE_KICK_SEC
         if warning_delay < 0: warning_delay = 0
         await asyncio.sleep(warning_delay)
-        print(f"Sending AFK kick warning for {player_name}.")
+        #print(f"Sending AFK kick warning for {player_name}.")
         await send_push_notification("AFK Kick Warning!", f"{player_name}, you will be kicked for being idle soon!",
                                      tags="warning")
         mention_string = get_player_specific_mention(player_name)
@@ -451,8 +451,8 @@ async def afk_warning_task(player_name: str):
                               color=Config.COLORS.INFO)
         embed.add_field(name="Kick Timer", value=f"Kick <t:{kick_timestamp}:R>")
         await target_channel.send(content=mention_string, embed=embed)
-    except asyncio.CancelledError:
-        print(f"AFK timer for {player_name} was cancelled successfully.")
+    #except asyncio.CancelledError:
+        #print(f"AFK timer for {player_name} was cancelled successfully.")
     except Exception as e:
         print(f"An error occurred in afk_warning_task for {player_name}: {e}")
     finally:
@@ -488,7 +488,7 @@ async def monitor_minecraft_chat_loop():
                         player_name = afk_match.group(1)
                         if player_name.lower() in [p.lower() for p in Config.FILTERS.PLAYER_NAMES]:
                             if player_name.lower() in afk_timers: afk_timers[player_name.lower()].cancel()
-                            print(f"Player {player_name} is now AFK. Starting 30-minute kick timer.")
+                            #print(f"Player {player_name} is now AFK. Starting 30-minute kick timer.")
                             task = asyncio.create_task(afk_warning_task(player_name))
                             afk_timers[player_name.lower()] = task
                         continue
@@ -497,7 +497,7 @@ async def monitor_minecraft_chat_loop():
                         player_name = not_afk_match.group(1)
                         if player_name.lower() in [p.lower() for p in Config.FILTERS.PLAYER_NAMES]:
                             task = afk_timers.pop(player_name.lower(), None)
-                            if task: task.cancel(); print(f"Player {player_name} is no longer AFK. Timer cancelled.")
+                            if task: task.cancel(); #print(f"Player {player_name} is no longer AFK. Timer cancelled.")
                         continue
 
                     if wtrade_match := re.search(r"\[WTrade\] » (.+?) received (?:a|an) (.+?) from WonderTrade!",
