@@ -58,7 +58,7 @@ def select_user_and_configure():
     print("=== Cobblemon Dystoria Bot - Profile Selection ===");
     print("=" * 46)
     players = list(USER_PROFILES.keys())
-    for i, player in enumerate(players): print(f"  [{i + 1}] OTÁRIO DO IURI {player}")
+    for i, player in enumerate(players): print(f"  [{i + 1}] I am {player}")
     print("  [0] Exit")
     while True:
         try:
