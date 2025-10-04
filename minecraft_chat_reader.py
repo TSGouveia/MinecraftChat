@@ -86,9 +86,12 @@ def select_user_and_configure():
 # --- CENTRALIZED CONFIGURATION ---
 # =================================================================================
 class Config:
+    ERROR_LOG_FILE = "bot_errors.log"
+
     class DISCORD:
         try:
-            from config_local import DISCORD_TOKEN; TOKEN = DISCORD_TOKEN
+            from config_local import DISCORD_TOKEN;
+            TOKEN = DISCORD_TOKEN
         except ImportError:
             TOKEN = None
         CHANNEL_ID = 1403568094063890533;
@@ -108,8 +111,20 @@ class Config:
         CLEAR_CHANNEL_ON_STARTUP = True;
         DEBUG_MSG_LIFETIME_SEC = 20;
         WONDER_TRADE_COOLDOWN_SEC = 600
-        RAID_TIER_TIMERS_SEC = {"Mega": 180, "Paradox": 180, "S": 120, "A": 120, "B": 120, "C": 120, "D": 120,
-                                "default": 120}
+        RAID_TIER_TIMERS_SEC = {
+            "Mega": 180,
+            "Paradox": 180,
+            "Legendary": 300,
+            "Mythical": 300,
+            "Sub-Legendary": 300,
+            "Ultra Beast": 300,
+            "S": 120,
+            "A": 120,
+            "B": 120,
+            "C": 120,
+            "D": 120,
+            "default": 120
+        }
         RAID_TIMER_FIGHT_SEC = 300;
         AFK_KICK_TIME_SEC = 1800;
         AFK_WARNING_BEFORE_KICK_SEC = 300
@@ -136,7 +151,6 @@ class Config:
 pokemon_db = {};
 subscribed_users = set();
 log_inactivity_warning_sent = False;
-RAID_LOG_FILE = "raid_log.csv";
 afk_timers = {}
 intents = discord.Intents.default();
 intents.message_content = True
@@ -177,15 +191,32 @@ TYPE_EMOJIS = {
 }
 
 
+# --- [NOVO] ---
+def log_error(message: str):
+    """Logs an error message to the specified log file with a timestamp."""
+    timestamp = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
+    try:
+        with open(Config.ERROR_LOG_FILE, 'a', encoding='utf-8') as f:
+            f.write(f"[{timestamp}] {message}\n")
+    except Exception as e:
+        print(f"!!! CRITICAL: FAILED TO WRITE TO ERROR LOG FILE: {e} !!!")
+
+
 def load_pokemon_data():
     global pokemon_db
     try:
         with open('pokemon_data.csv', mode='r', encoding='utf-8') as infile:
             reader = csv.DictReader(infile)
+            # Ensure all fieldnames are present to avoid partial reads
+            if not all(field in reader.fieldnames for field in ['id', 'name', 'types', 'abilities']):
+                raise KeyError("CSV file is missing one or more required columns.")
             pokemon_db = {row['name'].lower(): row for row in reader}
         print(f"Pokémon database loaded with {len(pokemon_db)} entries.")
     except FileNotFoundError:
-        print("WARNING: 'pokemon_data.csv' not found. Advanced features will be disabled.")
+        print("CRITICAL ERROR: 'pokemon_data.csv' not found. Please run the data generation script first.")
+        pokemon_db = {}
+    except KeyError as e:
+        print(f"CRITICAL ERROR: 'pokemon_data.csv' seems to have missing columns: {e}. Please regenerate it.")
         pokemon_db = {}
 
 
@@ -247,92 +278,106 @@ def answer_trivia(question_text: str) -> str | None:
 
 
 def determine_raid_tier(pokemon_data: dict, is_mega: bool) -> str:
-    if not pokemon_data: return "Unknown"
-    if is_mega: return "Mega"
-    if pokemon_data.get('is_paradox') == 'TRUE': return "Paradox"
+    if not pokemon_data:
+        return "Unknown"
+
+    if is_mega:
+        return "Mega"
+
+    category = pokemon_data.get('special_category', '')
+    if category in ["Paradox", "Mythical", "Legendary", "Sub-Legendary", "Ultra Beast"]:
+        return category
+
     stats_to_sum = ['hp', 'attack', 'defense', 'special-attack', 'special-defense', 'speed']
     try:
         bst = sum(int(pokemon_data.get(stat, 0)) for stat in stats_to_sum)
     except (ValueError, TypeError):
         bst = 0
+
     if bst >= 500: return "S"
     if 450 <= bst <= 499: return "A"
     if 380 <= bst <= 449: return "B"
     if 300 <= bst <= 379: return "C"
     if bst < 300: return "D"
+
     return "Unknown"
 
 
+# --- [MODIFICADO] ---
+# Adicionada a chamada para log_error() em caso de falha.
 async def create_pokemon_embed(pokemon_name: str, title: str, color: discord.Color, is_full_analysis: bool = False,
                                description_override: str = None, force_mega: int = 0) -> discord.Embed | None:
     normalized_name = normalize_pokemon_name(pokemon_name)
     pokemon_data = pokemon_db.get(normalized_name)
+
     if not pokemon_data:
-        print("=" * 60);
-        print(f"DEBUG: EMBED CREATION FAILED");
-        print(f"  - Pokémon Name from Log: '{pokemon_name}'");
-        print(f"  - Searched in Database as: '{normalized_name}'");
-        print(f"  - Reason: Name not found in the 'pokemon_data.csv' database.");
-        print(f"  - ACTION: Please verify that an entry for '{normalized_name}' exists in your CSV.");
+        error_message = f"Pokémon not found in database. Searched for: '{normalized_name}' (Original from log: '{pokemon_name}')"
         print("=" * 60)
+        print(f"DEBUG: EMBED CREATION FAILED")
+        print(f"  - {error_message}")
+        print("  - ACTION: Check 'pokemon_data.csv' for a missing entry or typo.")
+        print("=" * 60)
+        log_error(error_message)  # Escreve no ficheiro de log
         return None
-    is_mega = force_mega > 0 and pokemon_data.get('has_mega') == 'TRUE'
-    if is_mega and force_mega == 2 and pokemon_data.get('has_mega_2') == 'TRUE':
-        prefix = "mega_2_"
-    else:
-        prefix = "mega_"
-    if is_mega:
-        display_name = pokemon_data.get(f'{prefix}name') or f"Mega {pokemon_data['name'].title()}"
+
+    try:
+        is_mega = force_mega > 0 and pokemon_data.get('has_mega') == 'TRUE'
+        prefix = ""
+        if is_mega:
+            prefix = "mega_2_" if force_mega == 2 and pokemon_data.get('has_mega_2') == 'TRUE' else "mega_"
+
+        display_name = pokemon_data.get(f'{prefix}name', pokemon_data['name']).title()
         sprite_url = pokemon_data.get(f'{prefix}sprite_url') or pokemon_data['sprite_url']
-        types = [t.strip() for t in (pokemon_data.get(f'{prefix}types') or pokemon_data['types']).split(',')]
-        abilities = [a.strip().title() for a in
-                     (pokemon_data.get(f'{prefix}abilities') or pokemon_data['abilities']).split(',')]
-        stats = {
-            'hp': pokemon_data.get(f'{prefix}hp') or pokemon_data['hp'],
-            'attack': pokemon_data.get(f'{prefix}attack') or pokemon_data['attack'],
-            'defense': pokemon_data.get(f'{prefix}defense') or pokemon_data['defense'],
-            'special-attack': pokemon_data.get(f'{prefix}special-attack') or pokemon_data['special-attack'],
-            'special-defense': pokemon_data.get(f'{prefix}special-defense') or pokemon_data['special-defense'],
-            'speed': pokemon_data.get(f'{prefix}speed') or pokemon_data['speed']
-        }
-    else:
-        display_name = pokemon_data['name'].title()
-        sprite_url = pokemon_data['sprite_url']
-        types = [t.strip() for t in pokemon_data['types'].split(',')]
-        abilities = [a.strip().title() for a in pokemon_data['abilities'].split(',')]
-        stats = {
-            'hp': pokemon_data['hp'], 'attack': pokemon_data['attack'], 'defense': pokemon_data['defense'],
-            'special-attack': pokemon_data['special-attack'], 'special-defense': pokemon_data['special-defense'],
-            'speed': pokemon_data['speed']
-        }
-    description = description_override if description_override is not None else f"Strategic analysis for **{display_name}**"
-    embed = discord.Embed(title=title, description=description, color=color)
-    if sprite_url: embed.set_image(url=sprite_url)
-    if is_full_analysis:
-        fields = []
-        fields.append(("Type(s)", ' '.join([f"{TYPE_EMOJIS.get(t, '')} {t.title()}" for t in types]), False))
-        effectiveness = calculate_effectiveness(types)
-        weak_str = ""
-        if effectiveness['weaknesses'][
-            'x4']: weak_str += f"**Extremely Weak (x4) to:** {', '.join(effectiveness['weaknesses']['x4'])}\n"
-        if effectiveness['weaknesses'][
-            'x2']: weak_str += f"**Weak (x2) to:** {', '.join(effectiveness['weaknesses']['x2'])}\n"
-        fields.append(("⚠️ Weaknesses", weak_str if weak_str else "None", False))
-        resist_str = ""
-        if effectiveness['resistances']: resist_str += f"**Resists:** {', '.join(effectiveness['resistances'])}\n"
-        if effectiveness['immunities']: resist_str += f"**Immune to:** {', '.join(effectiveness['immunities'])}\n"
-        fields.append(("🛡️ Resistances & Immunities", resist_str if resist_str else "None", False))
-        fields.append(("Abilities", ', '.join(abilities), False))
-        stats_str = (
-            f"**HP:** {stats['hp']} | **Atk:** {stats['attack']} | **Def:** {stats['defense']} | " f"**SpA:** {stats['special-attack']} | **SpD:** {stats['special-defense']} | **Spe:** {stats['speed']}")
-        fields.append(("Base Stats", stats_str, False))
-        for name, value, inline in fields:
-            embed.add_field(name=name, value=value, inline=inline)
-    else:
-        embed.add_field(name="Type(s)", value=' '.join([f"{TYPE_EMOJIS.get(t, '')} {t.title()}" for t in types]),
-                        inline=False)
-    embed.set_footer(text=f"Pokémon: {pokemon_data['name']} | Good luck!")
-    return embed
+        types_str = pokemon_data.get(f'{prefix}types') or pokemon_data['types']
+        abilities_str = pokemon_data.get(f'{prefix}abilities') or pokemon_data['abilities']
+
+        stats = {stat: (pokemon_data.get(f'{prefix}{stat}') or pokemon_data.get(stat, '0')) for stat in
+                 ['hp', 'attack', 'defense', 'special-attack', 'special-defense', 'speed']}
+
+        types = [t.strip() for t in types_str.split(',')] if types_str else []
+        abilities = [a.strip().title() for a in abilities_str.split(',')] if abilities_str else []
+
+        description = description_override if description_override is not None else f"Strategic analysis for **{display_name}**"
+        embed = discord.Embed(title=title, description=description, color=color)
+        if sprite_url: embed.set_image(url=sprite_url)
+
+        if is_full_analysis:
+            embed.add_field(name="Type(s)",
+                            value=' '.join([f"{TYPE_EMOJIS.get(t, '')} {t.title()}" for t in types]) or "N/A",
+                            inline=False)
+            effectiveness = calculate_effectiveness(types)
+            weak_str = ""
+            if effectiveness['weaknesses'][
+                'x4']: weak_str += f"**x4:** {', '.join(effectiveness['weaknesses']['x4'])}\n"
+            if effectiveness['weaknesses'][
+                'x2']: weak_str += f"**x2:** {', '.join(effectiveness['weaknesses']['x2'])}\n"
+            embed.add_field(name="⚠️ Weaknesses", value=weak_str.strip() if weak_str else "None", inline=False)
+
+            resist_str = ""
+            if effectiveness['resistances']: resist_str += f"**Resists:** {', '.join(effectiveness['resistances'])}\n"
+            if effectiveness['immunities']: resist_str += f"**Immune to:** {', '.join(effectiveness['immunities'])}\n"
+            embed.add_field(name="🛡️ Resistances & Immunities", value=resist_str.strip() if resist_str else "None",
+                            inline=False)
+
+            embed.add_field(name="Abilities", value=', '.join(abilities) or "N/A", inline=False)
+
+            stats_str = (
+                f"**HP:** {stats['hp']} | **Atk:** {stats['attack']} | **Def:** {stats['defense']} | "
+                f"**SpA:** {stats['special-attack']} | **SpD:** {stats['special-defense']} | **Spe:** {stats['speed']}"
+            )
+            embed.add_field(name="Base Stats", value=stats_str, inline=False)
+        else:
+            embed.add_field(name="Type(s)",
+                            value=' '.join([f"{TYPE_EMOJIS.get(t, '')} {t.title()}" for t in types]) or "N/A",
+                            inline=False)
+
+        embed.set_footer(text=f"Pokémon: {pokemon_data['name']} | Good luck!")
+        return embed
+    except Exception as e:
+        error_message = f"Error building embed for '{pokemon_name}'. Check CSV data integrity. Details: {e}"
+        print(f"CRITICAL ERROR creating embed: {error_message}")
+        log_error(error_message)
+        return None
 
 
 async def send_push_notification(title: str, message: str, tags: str = "bell", icon_url: str = None):
@@ -347,35 +392,27 @@ async def send_push_notification(title: str, message: str, tags: str = "bell", i
 
 
 async def get_push_message_details(pokemon_name: str, message: str, force_mega: int = 0, full_detail: bool = True) -> \
-tuple[str, str | None]:
+        tuple[str, str | None]:
     normalized_name = normalize_pokemon_name(pokemon_name)
     pokemon_data = pokemon_db.get(normalized_name)
     if not pokemon_data:
+        log_error(f"Push notification failed for '{pokemon_name}': not found in database.")
         return message, None
+
     is_mega = force_mega > 0 and pokemon_data.get('has_mega') == 'TRUE'
-    prefix = "mega_2_" if is_mega and force_mega == 2 and pokemon_data.get('has_mega_2') == 'TRUE' else "mega_"
+    prefix = ""
     if is_mega:
-        sprite_url = pokemon_data.get(f'{prefix}sprite_url') or pokemon_data['sprite_url']
-        types = [t.strip() for t in (pokemon_data.get(f'{prefix}types') or pokemon_data['types']).split(',')]
-        abilities = [a.strip().title() for a in
-                     (pokemon_data.get(f'{prefix}abilities') or pokemon_data['abilities']).split(',')]
-        stats = {
-            'hp': pokemon_data.get(f'{prefix}hp') or pokemon_data['hp'],
-            'attack': pokemon_data.get(f'{prefix}attack') or pokemon_data['attack'],
-            'defense': pokemon_data.get(f'{prefix}defense') or pokemon_data['defense'],
-            'special-attack': pokemon_data.get(f'{prefix}special-attack') or pokemon_data['special-attack'],
-            'special-defense': pokemon_data.get(f'{prefix}special-defense') or pokemon_data['special-defense'],
-            'speed': pokemon_data.get(f'{prefix}speed') or pokemon_data['speed']
-        }
-    else:
-        sprite_url = pokemon_data['sprite_url']
-        types = [t.strip() for t in pokemon_data['types'].split(',')]
-        abilities = [a.strip().title() for a in pokemon_data['abilities'].split(',')]
-        stats = {
-            'hp': pokemon_data['hp'], 'attack': pokemon_data['attack'], 'defense': pokemon_data['defense'],
-            'special-attack': pokemon_data['special-attack'], 'special-defense': pokemon_data['special-defense'],
-            'speed': pokemon_data['speed']
-        }
+        prefix = "mega_2_" if force_mega == 2 and pokemon_data.get('has_mega_2') == 'TRUE' else "mega_"
+
+    sprite_url = pokemon_data.get(f'{prefix}sprite_url') or pokemon_data['sprite_url']
+    types_str = pokemon_data.get(f'{prefix}types') or pokemon_data['types']
+    abilities_str = pokemon_data.get(f'{prefix}abilities') or pokemon_data['abilities']
+    stats = {stat: (pokemon_data.get(f'{prefix}{stat}') or pokemon_data.get(stat, '0')) for stat in
+             ['hp', 'attack', 'defense', 'special-attack', 'special-defense', 'speed']}
+
+    types = [t.strip() for t in types_str.split(',')] if types_str else []
+    abilities = [a.strip().title() for a in abilities_str.split(',')] if abilities_str else []
+
     effectiveness = calculate_effectiveness(types)
     body_parts = [message, ""]
     body_parts.append(' '.join([f"{TYPE_EMOJIS.get(t, '')} {t.title()}" for t in types]))
@@ -441,7 +478,6 @@ async def afk_warning_task(player_name: str):
         warning_delay = Config.BEHAVIOR.AFK_KICK_TIME_SEC - Config.BEHAVIOR.AFK_WARNING_BEFORE_KICK_SEC
         if warning_delay < 0: warning_delay = 0
         await asyncio.sleep(warning_delay)
-        #print(f"Sending AFK kick warning for {player_name}.")
         await send_push_notification("AFK Kick Warning!", f"{player_name}, you will be kicked for being idle soon!",
                                      tags="warning")
         mention_string = get_player_specific_mention(player_name)
@@ -451,8 +487,6 @@ async def afk_warning_task(player_name: str):
                               color=Config.COLORS.INFO)
         embed.add_field(name="Kick Timer", value=f"Kick <t:{kick_timestamp}:R>")
         await target_channel.send(content=mention_string, embed=embed)
-    #except asyncio.CancelledError:
-        #print(f"AFK timer for {player_name} was cancelled successfully.")
     except Exception as e:
         print(f"An error occurred in afk_warning_task for {player_name}: {e}")
     finally:
@@ -488,7 +522,6 @@ async def monitor_minecraft_chat_loop():
                         player_name = afk_match.group(1)
                         if player_name.lower() in [p.lower() for p in Config.FILTERS.PLAYER_NAMES]:
                             if player_name.lower() in afk_timers: afk_timers[player_name.lower()].cancel()
-                            #print(f"Player {player_name} is now AFK. Starting 30-minute kick timer.")
                             task = asyncio.create_task(afk_warning_task(player_name))
                             afk_timers[player_name.lower()] = task
                         continue
@@ -497,7 +530,7 @@ async def monitor_minecraft_chat_loop():
                         player_name = not_afk_match.group(1)
                         if player_name.lower() in [p.lower() for p in Config.FILTERS.PLAYER_NAMES]:
                             task = afk_timers.pop(player_name.lower(), None)
-                            if task: task.cancel(); #print(f"Player {player_name} is no longer AFK. Timer cancelled.")
+                            if task: task.cancel();
                         continue
 
                     if wtrade_match := re.search(r"\[WTrade\] » (.+?) received (?:a|an) (.+?) from WonderTrade!",
@@ -521,17 +554,19 @@ async def monitor_minecraft_chat_loop():
                                 setup_time = Config.BEHAVIOR.RAID_TIER_TIMERS_SEC.get(raid_tier,
                                                                                       Config.BEHAVIOR.RAID_TIER_TIMERS_SEC[
                                                                                           "default"])
-                                if raid_tier in ["Mega", "Paradox", "S"]:
-                                    summary_text = f"**S+ RAID STARTED!** - {pokemon_name.title()}"
-                                    push_title = f"S+ RAID - {pokemon_name.upper()}"
+                                if raid_tier in ["Mega", "Paradox", "Legendary", "Mythical", "Ultra Beast", "S"]:
+                                    summary_text = f"**HIGH-TIER RAID!** - {pokemon_name.title()}"
+                                    push_title = f"{raid_tier.upper()} RAID - {pokemon_name.upper()}"
                                 else:
                                     summary_text = f"**RAID STARTED!** - {pokemon_name.title()}"
                                     push_title = f"RAID STARTED - {pokemon_name.upper()}"
+
                                 detailed_message, icon_url = await get_push_message_details(pokemon_name,
                                                                                             "A new raid is starting!",
                                                                                             force_mega=1 if is_mega_raid else 0,
                                                                                             full_detail=False)
                                 await send_push_notification(push_title, detailed_message, "battle", icon_url=icon_url)
+
                                 embed_title = "⚔️ RAID STARTED! ⚔️"
                                 embed = await create_pokemon_embed(pokemon_name, embed_title, Config.COLORS.RAID,
                                                                    is_full_analysis=True,
@@ -546,9 +581,11 @@ async def monitor_minecraft_chat_loop():
                                         embed.add_field(name="❗️ Multiple Mega Forms",
                                                         value=f"Admin can use `!raid form <message_id> 2` to switch.",
                                                         inline=False)
+
                                     sent_message = await target_channel.send(
                                         content=f"{summary_text}\n{mention_string}".strip(), embed=embed)
                                     asyncio.create_task(raid_timer_task(sent_message, setup_time))
+
                                     if pokemon_data.get('has_mega_2') == 'TRUE':
                                         updated_embed = sent_message.embeds[0]
                                         updated_embed.set_field_at(len(updated_embed.fields) - 1,
@@ -557,9 +594,9 @@ async def monitor_minecraft_chat_loop():
                                                                    inline=False)
                                         await sent_message.edit(embed=updated_embed)
                                 else:
-                                    print(
-                                        f"WARNING: Could not create embed for '{pokemon_name}'. Sending simple alert.")
-                                    await target_channel.send(content=f"{summary_text}\n{mention_string}".strip())
+                                    # Fallback message if embed creation fails
+                                    await target_channel.send(
+                                        content=f"{summary_text}\n{mention_string}".strip() + f"\n(Could not generate embed for {pokemon_name}. Check error logs.)")
                                 break
                         continue
 
@@ -582,7 +619,6 @@ async def monitor_minecraft_chat_loop():
                                 await target_channel.send(content=f"{summary_text}\n{mention_string}".strip(),
                                                           embed=embed)
                             else:
-                                print(f"WARNING: Could not create embed for '{pokemon_name}'. Sending simple alert.")
                                 await target_channel.send(content=f"{summary_text}\n{mention_string}".strip())
                         continue
 
@@ -604,7 +640,6 @@ async def monitor_minecraft_chat_loop():
                                 await target_channel.send(content=f"{summary_text}\n{mention_string}".strip(),
                                                           embed=embed)
                             else:
-                                print(f"WARNING: Could not create embed for '{pokemon_name}'. Sending simple alert.")
                                 await target_channel.send(content=f"{summary_text}\n{mention_string}".strip())
                         continue
 
@@ -628,7 +663,6 @@ async def monitor_minecraft_chat_loop():
                                 await target_channel.send(content=f"{summary_text}\n{mention_string}".strip(),
                                                           embed=embed)
                             else:
-                                print(f"WARNING: Could not create embed for '{pokemon_name}'. Sending simple alert.")
                                 await target_channel.send(content=f"{summary_text}\n{mention_string}".strip())
                         continue
 
@@ -650,8 +684,9 @@ async def monitor_minecraft_chat_loop():
             await bot.close()
         except Exception as e:
             print(f"CRITICAL ERROR in monitoring loop: {e}")
+            log_error(f"CRITICAL ERROR in monitoring loop: {e}")
             if target_channel: await target_channel.send(
-                f"<@{Config.DISCORD.ADMIN_ID}> **[CRITICAL ALERT]** » Unexpected error: `{e}`.")
+                f"<@{Config.DISCORD.ADMIN_ID}> **[CRITICAL ALERT]** » Unexpected error: `{e}`. Check logs.")
             await asyncio.sleep(30)
 
 
@@ -682,9 +717,10 @@ async def on_ready():
     if not target_channel:
         print(f"FATAL ERROR: Channel with ID {Config.DISCORD.CHANNEL_ID} not found.")
         return await bot.close()
-    if Config.BEHAVIOR.CLEAR_CHANNEL_ON_STARTUP and Config.DISCORD.ADMIN_ID == 379261623803707405:  # Only clear if LazySan is running it
+    if Config.BEHAVIOR.CLEAR_CHANNEL_ON_STARTUP and Config.DISCORD.ADMIN_ID == 379261623803707405:
         try:
-            await target_channel.purge(limit=100); print("Channel successfully cleared by admin.")
+            await target_channel.purge(limit=100);
+            print("Channel successfully cleared by admin.")
         except discord.errors.Forbidden:
             print("WARNING: Bot lacks permission to clear messages in the channel.")
         except Exception as e:
@@ -696,8 +732,6 @@ async def on_ready():
 
 
 def is_core_user():
-    """Check if the command author is one of the main users."""
-
     async def predicate(ctx):
         is_allowed = ctx.author.id in Config.DISCORD.PLAYER_DISCORD_MAP.values()
         if not is_allowed:
@@ -730,8 +764,6 @@ async def on_message(message):
 
 
 def is_admin():
-    """Check if the command author is the user running the script."""
-
     async def predicate(ctx): return ctx.author.id == Config.DISCORD.ADMIN_ID
 
     return commands.check(predicate)
@@ -761,7 +793,7 @@ async def show_features_panel(ctx):
                           description="This bot monitors the game log to provide real-time alerts and assistance. Here's what it does automatically:",
                           color=Config.COLORS.INFO)
     embed.add_field(name="🚨 Smart Raid Alerts",
-                    value=f"The bot announces Raids with a live timer that progresses from **Setup** -> **Fight** -> **Ended**. It also automatically assigns a tier and intelligently decides who to mention:\n• **S+ Raids (Mega/Paradox/S):** Mentions everyone subscribed with `!notifications on`.\n• **Personal Events (Boss, Shiny, etc.):** Only mentions the specific user linked to the Minecraft player, and only if they are subscribed.",
+                    value=f"The bot announces Raids with a live timer that progresses from **Setup** -> **Fight** -> **Ended**. It also automatically assigns a tier and intelligently decides who to mention:\n• **High-Tier Raids (Mega, Paradox, Legendary, etc.):** Mentions everyone subscribed with `!notifications on`.\n• **Personal Events (Boss, Shiny, etc.):** Only mentions the specific user linked to the Minecraft player, and only if they are subscribed.",
                     inline=False)
     embed.add_field(name="🎁 Wonder Trade Reminder",
                     value=f"After a configured player uses Wonder Trade, the bot will post a reminder here and **personally @mention** them (if subscribed) after the {int(Config.BEHAVIOR.WONDER_TRADE_COOLDOWN_SEC / 60)}-minute cooldown has passed.",
