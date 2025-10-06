@@ -8,6 +8,7 @@ import re
 import requests
 from discord.ext import tasks, commands
 from datetime import datetime, timezone
+from thefuzz import process  # --- [NOVO] Import para a busca fuzzy ---
 
 # =================================================================================
 # --- USER PROFILES & DYNAMIC CONFIGURATION ---
@@ -191,9 +192,7 @@ TYPE_EMOJIS = {
 }
 
 
-# --- [NOVO] ---
 def log_error(message: str):
-    """Logs an error message to the specified log file with a timestamp."""
     timestamp = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
     try:
         with open(Config.ERROR_LOG_FILE, 'a', encoding='utf-8') as f:
@@ -207,7 +206,6 @@ def load_pokemon_data():
     try:
         with open('pokemon_data.csv', mode='r', encoding='utf-8') as infile:
             reader = csv.DictReader(infile)
-            # Ensure all fieldnames are present to avoid partial reads
             if not all(field in reader.fieldnames for field in ['id', 'name', 'types', 'abilities']):
                 raise KeyError("CSV file is missing one or more required columns.")
             pokemon_db = {row['name'].lower(): row for row in reader}
@@ -220,8 +218,51 @@ def load_pokemon_data():
         pokemon_db = {}
 
 
-def normalize_pokemon_name(name: str) -> str:
-    return name.strip().lower().replace(' ', '-')
+# --- [NOVO] Adicione esta constante ---
+DEFAULT_FORM_SUFFIXES = [
+    "-standard", "-disguised", "-incarnate", "-altered", "-red-striped",
+    "-amped", "-normal", "-plant", "-aria", "-average", "-50"
+]
+
+
+# --- [NOVO] Função de busca híbrida ---
+def find_pokemon_in_db(name_from_log: str) -> dict | None:
+    """
+    Busca um Pokémon no DB com uma estratégia híbrida.
+    1. Tenta correspondências diretas e heurísticas rápidas.
+    2. Se falhar, recorre a fuzzy matching como último recurso.
+    """
+    if not name_from_log:
+        return None
+
+    # --- Etapa Rápida (90% dos casos) ---
+    clean_name = name_from_log.lower().strip()
+    clean_name = re.sub(r"[’'.]", "", clean_name)
+    key_name = clean_name.replace(' ', '-')
+
+    if key_name in pokemon_db:
+        return pokemon_db[key_name]
+
+    for suffix in DEFAULT_FORM_SUFFIXES:
+        potential_key = f"{key_name}{suffix}"
+        if potential_key in pokemon_db:
+            return pokemon_db[potential_key]
+
+    for db_key, pokemon_data in pokemon_db.items():
+        if db_key.startswith(key_name + '-'):
+            return pokemon_data
+
+    # --- Etapa Lenta (Fuzzy Matching como Plano B) ---
+    print(f"[Fuzzy Search] Quick search failed for '{name_from_log}'. Engaging fuzzy matching...")
+    best_match, score = process.extractOne(name_from_log, pokemon_db.keys())
+
+    if score >= 85:
+        print(f"[Fuzzy Search] Matched '{name_from_log}' with '{best_match}' (Score: {score}).")
+        return pokemon_db[best_match]
+
+    print(
+        f"[Fuzzy Search] FAILED to find a confident match for '{name_from_log}'. Best attempt was '{best_match}' with score {score}.")
+    return None
 
 
 def calculate_effectiveness(pokemon_types: list[str]) -> dict:
@@ -250,6 +291,7 @@ def calculate_effectiveness(pokemon_types: list[str]) -> dict:
     return {"weaknesses": weaknesses, "resistances": resistances, "immunities": immunities}
 
 
+# --- [MODIFICADO] ---
 def answer_trivia(question_text: str) -> str | None:
     if not pokemon_db: return None
     question_text_lower = question_text.lower()
@@ -261,16 +303,14 @@ def answer_trivia(question_text: str) -> str | None:
     type_match = re.search(r"what type is (.+?)\?", question_text_lower)
     if type_match:
         pokemon_name = type_match.group(1).strip()
-        normalized_name = normalize_pokemon_name(pokemon_name)
-        if pokemon_info := pokemon_db.get(normalized_name):
+        if pokemon_info := find_pokemon_in_db(pokemon_name):
             if types := pokemon_info.get("types"):
                 parts = [f"**{part.strip().title()}**" for part in types.split(',')]
                 return f"Answer: {' or '.join(parts)}"
     ability_match = re.search(r"what ability does (.+?) have\?", question_text_lower)
     if ability_match:
         pokemon_name = ability_match.group(1).strip()
-        normalized_name = normalize_pokemon_name(pokemon_name)
-        if pokemon_info := pokemon_db.get(normalized_name):
+        if pokemon_info := find_pokemon_in_db(pokemon_name):
             if abilities := pokemon_info.get("abilities"):
                 parts = [f"**{part.strip().title()}**" for part in abilities.split(',')]
                 return f"Answer: {' or '.join(parts)}"
@@ -280,44 +320,37 @@ def answer_trivia(question_text: str) -> str | None:
 def determine_raid_tier(pokemon_data: dict, is_mega: bool) -> str:
     if not pokemon_data:
         return "Unknown"
-
     if is_mega:
         return "Mega"
-
     category = pokemon_data.get('special_category', '')
     if category in ["Paradox", "Mythical", "Legendary", "Sub-Legendary", "Ultra Beast"]:
         return category
-
     stats_to_sum = ['hp', 'attack', 'defense', 'special-attack', 'special-defense', 'speed']
     try:
         bst = sum(int(pokemon_data.get(stat, 0)) for stat in stats_to_sum)
     except (ValueError, TypeError):
         bst = 0
-
     if bst >= 500: return "S"
     if 450 <= bst <= 499: return "A"
     if 380 <= bst <= 449: return "B"
     if 300 <= bst <= 379: return "C"
     if bst < 300: return "D"
-
     return "Unknown"
 
 
 # --- [MODIFICADO] ---
-# Adicionada a chamada para log_error() em caso de falha.
 async def create_pokemon_embed(pokemon_name: str, title: str, color: discord.Color, is_full_analysis: bool = False,
                                description_override: str = None, force_mega: int = 0) -> discord.Embed | None:
-    normalized_name = normalize_pokemon_name(pokemon_name)
-    pokemon_data = pokemon_db.get(normalized_name)
+    pokemon_data = find_pokemon_in_db(pokemon_name)
 
     if not pokemon_data:
-        error_message = f"Pokémon not found in database. Searched for: '{normalized_name}' (Original from log: '{pokemon_name}')"
+        error_message = f"Pokémon não encontrado na base de dados após busca inteligente. Original do log: '{pokemon_name}'"
         print("=" * 60)
         print(f"DEBUG: EMBED CREATION FAILED")
         print(f"  - {error_message}")
-        print("  - ACTION: Check 'pokemon_data.csv' for a missing entry or typo.")
+        print("  - AÇÃO: Verifique 'pokemon_data.csv' ou a lógica em 'find_pokemon_in_db'.")
         print("=" * 60)
-        log_error(error_message)  # Escreve no ficheiro de log
+        log_error(error_message)
         return None
 
     try:
@@ -325,22 +358,17 @@ async def create_pokemon_embed(pokemon_name: str, title: str, color: discord.Col
         prefix = ""
         if is_mega:
             prefix = "mega_2_" if force_mega == 2 and pokemon_data.get('has_mega_2') == 'TRUE' else "mega_"
-
         display_name = pokemon_data.get(f'{prefix}name', pokemon_data['name']).title()
         sprite_url = pokemon_data.get(f'{prefix}sprite_url') or pokemon_data['sprite_url']
         types_str = pokemon_data.get(f'{prefix}types') or pokemon_data['types']
         abilities_str = pokemon_data.get(f'{prefix}abilities') or pokemon_data['abilities']
-
         stats = {stat: (pokemon_data.get(f'{prefix}{stat}') or pokemon_data.get(stat, '0')) for stat in
                  ['hp', 'attack', 'defense', 'special-attack', 'special-defense', 'speed']}
-
         types = [t.strip() for t in types_str.split(',')] if types_str else []
         abilities = [a.strip().title() for a in abilities_str.split(',')] if abilities_str else []
-
         description = description_override if description_override is not None else f"Strategic analysis for **{display_name}**"
         embed = discord.Embed(title=title, description=description, color=color)
         if sprite_url: embed.set_image(url=sprite_url)
-
         if is_full_analysis:
             embed.add_field(name="Type(s)",
                             value=' '.join([f"{TYPE_EMOJIS.get(t, '')} {t.title()}" for t in types]) or "N/A",
@@ -352,15 +380,12 @@ async def create_pokemon_embed(pokemon_name: str, title: str, color: discord.Col
             if effectiveness['weaknesses'][
                 'x2']: weak_str += f"**x2:** {', '.join(effectiveness['weaknesses']['x2'])}\n"
             embed.add_field(name="⚠️ Weaknesses", value=weak_str.strip() if weak_str else "None", inline=False)
-
             resist_str = ""
             if effectiveness['resistances']: resist_str += f"**Resists:** {', '.join(effectiveness['resistances'])}\n"
             if effectiveness['immunities']: resist_str += f"**Immune to:** {', '.join(effectiveness['immunities'])}\n"
             embed.add_field(name="🛡️ Resistances & Immunities", value=resist_str.strip() if resist_str else "None",
                             inline=False)
-
             embed.add_field(name="Abilities", value=', '.join(abilities) or "N/A", inline=False)
-
             stats_str = (
                 f"**HP:** {stats['hp']} | **Atk:** {stats['attack']} | **Def:** {stats['defense']} | "
                 f"**SpA:** {stats['special-attack']} | **SpD:** {stats['special-defense']} | **Spe:** {stats['speed']}"
@@ -370,7 +395,6 @@ async def create_pokemon_embed(pokemon_name: str, title: str, color: discord.Col
             embed.add_field(name="Type(s)",
                             value=' '.join([f"{TYPE_EMOJIS.get(t, '')} {t.title()}" for t in types]) or "N/A",
                             inline=False)
-
         embed.set_footer(text=f"Pokémon: {pokemon_data['name']} | Good luck!")
         return embed
     except Exception as e:
@@ -391,10 +415,10 @@ async def send_push_notification(title: str, message: str, tags: str = "bell", i
         print(f"ERROR: Failed to send push notification: {e}")
 
 
+# --- [MODIFICADO] ---
 async def get_push_message_details(pokemon_name: str, message: str, force_mega: int = 0, full_detail: bool = True) -> \
         tuple[str, str | None]:
-    normalized_name = normalize_pokemon_name(pokemon_name)
-    pokemon_data = pokemon_db.get(normalized_name)
+    pokemon_data = find_pokemon_in_db(pokemon_name)
     if not pokemon_data:
         log_error(f"Push notification failed for '{pokemon_name}': not found in database.")
         return message, None
@@ -403,16 +427,13 @@ async def get_push_message_details(pokemon_name: str, message: str, force_mega: 
     prefix = ""
     if is_mega:
         prefix = "mega_2_" if force_mega == 2 and pokemon_data.get('has_mega_2') == 'TRUE' else "mega_"
-
     sprite_url = pokemon_data.get(f'{prefix}sprite_url') or pokemon_data['sprite_url']
     types_str = pokemon_data.get(f'{prefix}types') or pokemon_data['types']
     abilities_str = pokemon_data.get(f'{prefix}abilities') or pokemon_data['abilities']
     stats = {stat: (pokemon_data.get(f'{prefix}{stat}') or pokemon_data.get(stat, '0')) for stat in
              ['hp', 'attack', 'defense', 'special-attack', 'special-defense', 'speed']}
-
     types = [t.strip() for t in types_str.split(',')] if types_str else []
     abilities = [a.strip().title() for a in abilities_str.split(',')] if abilities_str else []
-
     effectiveness = calculate_effectiveness(types)
     body_parts = [message, ""]
     body_parts.append(' '.join([f"{TYPE_EMOJIS.get(t, '')} {t.title()}" for t in types]))
@@ -438,10 +459,10 @@ def get_player_specific_mention(player_name: str) -> str:
     return ""
 
 
+# --- [MODIFICADO] ---
 async def schedule_wondertrade_reminder(player_name: str, pokemon_name: str):
     await asyncio.sleep(Config.BEHAVIOR.WONDER_TRADE_COOLDOWN_SEC)
-    normalized_name = normalize_pokemon_name(pokemon_name)
-    pokemon_data = pokemon_db.get(normalized_name)
+    pokemon_data = find_pokemon_in_db(pokemon_name)
     icon_url = pokemon_data.get('sprite_url') if pokemon_data else None
     await send_push_notification("🎁 Wonder Trade Ready!", f"{player_name}, you can Wonder Trade again!", tags="gift",
                                  icon_url=icon_url)
@@ -542,13 +563,13 @@ async def monitor_minecraft_chat_loop():
                             asyncio.create_task(schedule_wondertrade_reminder(player_name, pokemon_name))
                         continue
 
+                    # --- [MODIFICADO] ---
                     if "[Raid]" in raw_message and "A raid is starting against" in raw_message:
                         mention_string = ' '.join(f'<@{uid}>' for uid in subscribed_users)
                         for sub_line in raw_message.split('\\n'):
                             if raid_match := re.search(r"starting against .*?(.+?)!", sub_line, re.I):
                                 pokemon_name = raid_match.group(1).strip()
-                                normalized_name = normalize_pokemon_name(pokemon_name)
-                                pokemon_data = pokemon_db.get(normalized_name, {})
+                                pokemon_data = find_pokemon_in_db(pokemon_name) or {}
                                 is_mega_raid = pokemon_data.get('has_mega') == 'TRUE'
                                 raid_tier = determine_raid_tier(pokemon_data, is_mega_raid)
                                 setup_time = Config.BEHAVIOR.RAID_TIER_TIMERS_SEC.get(raid_tier,
@@ -594,7 +615,6 @@ async def monitor_minecraft_chat_loop():
                                                                    inline=False)
                                         await sent_message.edit(embed=updated_embed)
                                 else:
-                                    # Fallback message if embed creation fails
                                     await target_channel.send(
                                         content=f"{summary_text}\n{mention_string}".strip() + f"\n(Could not generate embed for {pokemon_name}. Check error logs.)")
                                 break
@@ -869,6 +889,7 @@ async def raid(ctx):
         await ctx.send(f"Invalid raid command. Use `{Config.DISCORD.COMMAND_PREFIX}raid form`.", ephemeral=True)
 
 
+# --- [MODIFICADO] ---
 @raid.command(name='form')
 @is_admin()
 async def raid_form(ctx, message_id: int, form_number: int):
@@ -894,7 +915,9 @@ async def raid_form(ctx, message_id: int, form_number: int):
     except (IndexError, AttributeError):
         await ctx.send("❌ Error: Could not parse Pokémon name from the embed footer.", ephemeral=True);
         return
-    pokemon_data = pokemon_db.get(normalize_pokemon_name(base_pokemon_name))
+
+    pokemon_data = find_pokemon_in_db(base_pokemon_name)
+
     if not pokemon_data or pokemon_data.get('has_mega') != 'TRUE':
         await ctx.send("❌ Error: This Pokémon does not have a Mega form.", ephemeral=True);
         return
