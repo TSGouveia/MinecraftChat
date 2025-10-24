@@ -691,11 +691,13 @@ async def monitor_minecraft_chat_loop():
                         if answer := answer_trivia(raw_message):
                             clean_answer_for_push = answer.replace('**', '')
                             await send_push_notification("Trivia Answer!", clean_answer_for_push, "brain")
+
                             content = raw_message.replace("[Trivia]", "").replace("»", "").strip()
-                            message_body = f"**[Trivia]** {content}"
-                            await target_channel.send(f"{message_body}\n{mention_string}".strip())
-                            await asyncio.sleep(1)
-                            await target_channel.send(answer)
+                            question_body = f"**[Trivia]** {content}"
+
+                            full_message = f"{question_body}\n\n{answer}\n\n{mention_string}".strip()
+
+                            await target_channel.send(full_message)
                         continue
         except FileNotFoundError:
             print(f"WARNING: Log file not found. Restart the script when the game is running.")
